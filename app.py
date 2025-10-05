@@ -13,8 +13,6 @@ from langchain_groq import ChatGroq
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader
-
-# --- Environment Setup ---
 load_dotenv()
 hf_token = os.getenv("HF_TOKEN")
 if hf_token:
@@ -33,9 +31,19 @@ def process_pdfs(uploaded_files, embeddings):
         all_documents.extend(loader.load())
         os.remove(temp_filepath)
 
+    # Check if any documents were loaded
+    if not all_documents:
+        return None
+   
+
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     splits = text_splitter.split_documents(all_documents)
+
     
+    # Check if any text was split from the documents
+    if not splits:
+        return None
+
     vectorstore = Chroma.from_documents(documents=splits, embedding=embeddings)
     return vectorstore.as_retriever()
 
@@ -81,27 +89,23 @@ def get_session_history(session_id: str) -> BaseChatMessageHistory:
 
 # --- Streamlit App UI ---
 
-st.set_page_config(page_title="Chat with PDFs")
-st.title("Conversational RAG with Chat History")
+st.set_page_config(page_title="Chat with PDFs", page_icon="💬")
+st.title("Conversational RAG with Chat History 💬")
 st.write("Upload your PDF documents and ask questions about their content.")
-# Input for Groq API Key
+
 groq_api_key = os.getenv("GROQ_API_KEY")
 if not groq_api_key:
     groq_api_key = st.text_input("Enter your Groq API key:", type="password")
 
-# Check if keys are available before proceeding
 if groq_api_key and hf_token:
-    # Initialize the LLM and embeddings model
     llm = ChatGroq(groq_api_key=groq_api_key, model_name="Gemma2-9b-It")
     embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
-    # File uploader for PDFs
     uploaded_files = st.file_uploader(
         "Choose your PDF files", type="pdf", accept_multiple_files=True
     )
 
     if uploaded_files:
-        # Using st.cache_resource to avoid reprocessing files on every interaction
         @st.cache_resource
         def create_retriever(_uploaded_files):
             with st.spinner("Processing PDFs..."):
@@ -109,32 +113,39 @@ if groq_api_key and hf_token:
         
         retriever = create_retriever(uploaded_files)
         
-        rag_chain = get_conversational_rag_chain(retriever, llm)
-        
-        conversational_rag_chain = RunnableWithMessageHistory(
-            rag_chain,
-            get_session_history,
-            input_messages_key="input",
-            history_messages_key="chat_history",
-            output_messages_key="answer",
-        )
-
-        session_id = "user_session"
-        
-        history = get_session_history(session_id)
-        for msg in history.messages:
-            st.chat_message(msg.type).write(msg.content)
-
-        if user_question := st.chat_input("Ask a question about your documents..."):
-            st.chat_message("human").write(user_question)
+        # --- MODIFICATION START 3 ---
+        # Handle the case where the retriever could not be created
+        if retriever is None:
+            st.error("Could not process the uploaded PDF(s). Please ensure they are not empty, corrupted, or image-only files and try again.")
+        else:
+            # If retriever is valid, proceed with the chat interface
+            rag_chain = get_conversational_rag_chain(retriever, llm)
             
-            with st.spinner("Thinking..."):
-                response = conversational_rag_chain.invoke(
-                    {"input": user_question},
-                    config={"configurable": {"session_id": session_id}}
-                )
+            conversational_rag_chain = RunnableWithMessageHistory(
+                rag_chain,
+                get_session_history,
+                input_messages_key="input",
+                history_messages_key="chat_history",
+                output_messages_key="answer",
+            )
+
+            session_id = "user_session"
             
-            st.chat_message("ai").write(response['answer'])
+            history = get_session_history(session_id)
+            for msg in history.messages:
+                st.chat_message(msg.type).write(msg.content)
+
+            if user_question := st.chat_input("Ask a question about your documents..."):
+                st.chat_message("human").write(user_question)
+                
+                with st.spinner("Thinking..."):
+                    response = conversational_rag_chain.invoke(
+                        {"input": user_question},
+                        config={"configurable": {"session_id": session_id}}
+                    )
+                
+                st.chat_message("ai").write(response['answer'])
+    
     else:
         st.info("Please upload one or more PDF files to get started.")
 else:
